@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tanda Viewer</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 1em;
+    }
+
+    article {
+      border: 1px solid #ccc;
+      padding: 1em;
+      margin-bottom: 1em;
+      width: max-content;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.5em;
+    }
+
+    th,
+    td {
+      border: 1px solid #ddd;
+      padding: 0.5em;
+      text-align: left;
+    }
+
+    .cortina {
+      font-style: italic;
+      color: #555;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Tanda Viewer</h1>
+  <input type="file" id="zipInput" accept=".zip" />
+  <button onclick="exportCSV()">Export to CSV</button>
+  <div id="tandasContainer"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
+  <script>
+    let library = {}, tandas = [], cortinas = {}, csvRows = [];
+    const skipColumns = [
+      "analysis_embeddedImage", "analysis_estimated", "analysis_checked", "tandas", "missing", "id", "score",
+      "classified", "newlyClassified", "invalidClassifiers", "titleTandas",
+      "sortArtist", "sortTitle", "hideFromTandaPlayer", "hideFromAutoDJ", "analysis_errors", "analysis_error",
+      "track_filename"
+    ];
+
+    const preferredOrder = ["track_artist", "track_title"];
+
+    document.getElementById('zipInput').addEventListener('change', handleZipUpload);
+
+    async function handleZipUpload(event) {
+      const zipFile = event.target.files[0];
+      if (!zipFile) return;
+
+      const zip = await JSZip.loadAsync(zipFile);
+      const files = {};
+
+      for (const filename of ['library.dat', 'tandas.dat', 'cortinas.dat']) {
+        if (zip.file(filename)) {
+          const content = await zip.file(filename).async('string');
+          try {
+            files[filename] = JSON.parse(content);
+          } catch (e) {
+            console.error(`Error parsing ${filename}:`, e);
+            files[filename] = [];
+          }
+        } else {
+          files[filename] = [];
+        }
+      }
+
+      if (files['library.dat'] && typeof files['library.dat'] === 'object') {
+        library = files['library.dat'];
+      }
+      if (Array.isArray(files['tandas.dat'])) {
+        tandas = files['tandas.dat'];
+      }
+      if (files['cortinas.dat'] && typeof files['cortinas.dat'] === 'object') {
+        cortinas = files['cortinas.dat'];
+      }
+      console.log(cortinas)
+
+      renderTandas();
+    }
+
+    function flattenTrackData(trackData) {
+      const result = {};
+      if (!trackData || typeof trackData !== 'object') return result;
+
+      function flatten(obj, prefix = '') {
+        for (const key in obj) {
+          const value = obj[key];
+          const prefixedKey = prefix ? `${prefix}_${key}` : key;
+          if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+            flatten(value, prefixedKey);
+          } else {
+            result[prefixedKey] = value;
+          }
+        }
+      }
+
+      flatten(trackData);
+      return result;
+    }
+
+    function renderTandas() {
+      const container = document.getElementById('tandasContainer');
+      container.innerHTML = '';
+
+      const allHeadersSet = new Set();
+
+      tandas.forEach(tanda => {
+        tanda.tracks.forEach(trackFile => {
+          const flatTrack = flattenTrackData(library[trackFile]);
+          Object.keys(flatTrack).forEach(key => {
+            if (!skipColumns.includes(key)) allHeadersSet.add(key);
+          });
+        });
+      });
+
+      const extraHeaders = Array.from(allHeadersSet)
+        .filter(h => !preferredOrder.includes(h))
+        .sort();
+
+      const orderedHeaders = [...preferredOrder, ...extraHeaders];
+      const headers = ['Tanda ID', 'Tanda Label', 'Tanda Style', 'Instrumental Tanda?', 'Tanda Description', 'Tanda Last Played', 'Tanda Rating', 'Track #', 'Filename', 'Cortina', ...orderedHeaders];
+      csvRows = [headers];
+
+      tandas.forEach((tanda, index) => {
+        const article = document.createElement('article');
+        const header = `<h2>#${tanda.id}  ${tanda.style} - ${tanda.instrumental ? 'Instrumental - ' : ''} ${tanda.label || 'Untitled'} (Rating: ${tanda.rating || '-'})</h2><h3>${tanda.description}</h3><h3>Last played: ${tanda.lastPlayed?new Date(tanda.lastPlayed).toLocaleDateString():''}</h3>`;
+
+        const cortinaText = tanda.cortina ? `Cortina: ${tanda.cortina.map(c => {
+          try {
+            return cortinas[c.track].track.title + ' / ' + cortinas[c.track].track.artist + ` (${c.track})`
+          } catch {
+            return c.track
+          }
+        })}` : 'No Cortina';
+
+        let tableHeaders = '<tr><th>#</th><th>Filename</th>';
+        orderedHeaders.forEach(h => tableHeaders += `<th>${h}</th>`);
+        tableHeaders += '</tr>';
+
+        let table = `<table><thead>${tableHeaders}</thead><tbody>`;
+
+        tanda.tracks.forEach((trackFile, i) => {
+          const entry = library[trackFile];
+          const flatTrack = flattenTrackData(entry);
+
+          table += `<tr><td>${i + 1}</td><td>${trackFile}</td>`;
+          orderedHeaders.forEach(prop => {
+            const val = flatTrack.hasOwnProperty(prop) ? flatTrack[prop] : '';
+            table += `<td>${val}</td>`;
+          });
+          table += '</tr>';
+
+          const csvRow = [
+            tanda.id,
+            tanda.label,
+            tanda.style,
+            tanda.instrumental,
+            tanda.description,
+            tanda.lastPlayed,
+            tanda.rating,
+            i + 1,
+            trackFile,
+            cortinaText,
+            ...orderedHeaders.map(p => flatTrack.hasOwnProperty(p) ? flatTrack[p] : '')
+          ];
+          csvRows.push(csvRow);
+        });
+
+        table += '</tbody></table>';
+        article.innerHTML = header + `<p class="cortina">${cortinaText}</p>` + table;
+        container.appendChild(article);
+      });
+    }
+
+    function exportCSV() {
+      const csvContent = csvRows.map(e => e.map(v => `"${v}"`).join(",")).join("\n");
+      const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "tandas_export.csv";
+      link.click();
+    }
+  </script>
+</body>
+
+</html>
